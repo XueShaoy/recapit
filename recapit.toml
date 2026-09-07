@@ -1,0 +1,12 @@
+[transcription]
+engine = "faster-whisper"
+model = "turbo"
+language = "zh"
+device = "auto"
+compute_type = "int8"
+
+[output]
+directory = "outputs"
+timestamps = "paragraph"
+paragraph_pause_seconds = 2.0
+paragraph_max_chars = 240

@@ -1,0 +1,45 @@
+[project]
+name = "recapit"
+version = "0.1.0"
+description = "基于 Whisper 的本地录音转写与 AI 总结工作流"
+readme = "README.md"
+requires-python = ">=3.11,<3.14"
+dependencies = [
+    "faster-whisper>=1.2.0",
+    "pydantic>=2.11.0",
+    "typer>=0.16.0",
+]
+
+[project.scripts]
+recapit = "recapit.cli:main"
+
+[dependency-groups]
+dev = [
+    "mypy>=1.17.0",
+    "pytest>=8.4.0",
+    "pytest-cov>=6.2.0",
+    "ruff>=0.12.0",
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/recapit"]
+
+[tool.pytest.ini_options]
+addopts = "-q"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+
+[tool.mypy]
+python_version = "3.11"
+strict = true
+packages = ["recapit"]
