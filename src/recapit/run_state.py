@@ -14,7 +14,7 @@ from recapit.artifacts import atomic_write_text
 from recapit.chunking import ChunkSpec
 from recapit.errors import ArtifactError
 from recapit.identity import sha256_file
-from recapit.models import Segment
+from recapit.models import Segment, WordTiming
 
 RUN_SCHEMA_VERSION = "1.0"
 
@@ -32,6 +32,12 @@ class ChunkStatus(StrEnum):
     completed = "completed"
 
 
+class SpeakerStage(StrEnum):
+    skipped = "skipped"
+    pending = "pending"
+    complete = "complete"
+
+
 class ChunkCheckpoint(BaseModel):
     model_config = ConfigDict(frozen=True, extra="forbid")
 
@@ -40,6 +46,7 @@ class ChunkCheckpoint(BaseModel):
     run_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
     language: str
     segments: list[Segment]
+    words: list[WordTiming] = Field(default_factory=list)
 
 
 class ChunkRecord(BaseModel):
@@ -73,6 +80,8 @@ class RunManifest(BaseModel):
     source_duration_seconds: float = Field(gt=0)
     source_path: str
     run_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+    speaker_signature: str | None = Field(default=None, pattern=r"^[0-9a-f]{64}$")
+    speaker_stage: SpeakerStage = SpeakerStage.skipped
     stage: WorkflowStage = WorkflowStage.planned
     chunks: list[ChunkRecord]
     artifacts: dict[str, ArtifactRecord] = Field(default_factory=dict)
@@ -114,6 +123,51 @@ def load_chunk_checkpoint(path: Path, *, expected_sha256: str | None = None) -> 
         raise ArtifactError(f"无法读取 chunk 检查点 {path}: {exc}") from exc
     except ValidationError as exc:
         raise ArtifactError(f"chunk 检查点格式无效 {path}: {exc}") from exc
+
+
+class SpeakerTurn(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    speaker_id: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> SpeakerTurn:
+        if self.end < self.start:
+            raise ValueError("speaker turn end must be greater than or equal to start")
+        return self
+
+
+class SpeakerCheckpoint(BaseModel):
+    model_config = ConfigDict(frozen=True, extra="forbid")
+
+    schema_version: Literal["1.0"] = "1.0"
+    speaker_signature: str = Field(pattern=r"^[0-9a-f]{64}$")
+    pipeline: str
+    max_speakers: int = Field(ge=2)
+    num_speakers: int | None = None
+    label_map: dict[str, str]
+    turns: list[SpeakerTurn]
+
+
+def write_speaker_checkpoint(path: Path, checkpoint: SpeakerCheckpoint) -> str:
+    atomic_write_text(path, checkpoint.model_dump_json(indent=2) + "\n", replace_existing=True)
+    loaded = load_speaker_checkpoint(path)
+    if loaded != checkpoint:
+        raise ArtifactError(f"说话人检查点回读校验失败: {path}")
+    return sha256_file(path)
+
+
+def load_speaker_checkpoint(path: Path, *, expected_sha256: str | None = None) -> SpeakerCheckpoint:
+    if expected_sha256 is not None and sha256_file(path) != expected_sha256:
+        raise ArtifactError(f"说话人检查点摘要不匹配: {path}")
+    try:
+        return SpeakerCheckpoint.model_validate_json(path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        raise ArtifactError(f"无法读取说话人检查点 {path}: {exc}") from exc
+    except ValidationError as exc:
+        raise ArtifactError(f"说话人检查点格式无效 {path}: {exc}") from exc
 
 
 class RunLock(AbstractContextManager["RunLock"]):

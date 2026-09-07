@@ -12,6 +12,14 @@ Recapit 使用 OpenAI 开源的 Whisper 模型在本地把录音转成结构化�
 uv sync --locked
 ```
 
+说话人分离是可选功能，默认不安装 PyTorch / pyannote。需要时：
+
+```bash
+uv sync --extra speakers
+```
+
+并准备 Hugging Face Token（按顺序读取 `HF_TOKEN`、`HUGGING_FACE_HUB_TOKEN`、`HUGGINGFACE_TOKEN`）。第一次下载前须用同一账号同意 [pyannote/speaker-diarization-community-1](https://huggingface.co/pyannote/speaker-diarization-community-1) 条款。权重缓存后可离线运行；音频始终留在本机。该模型为 CC-BY-4.0，项目文档保留署名。
+
 ## 三阶段流程
 
 先在本地转写：
@@ -58,6 +66,17 @@ uv run recapit render --transcript ... --summary ... --timestamps none
 ```
 
 默认按自然段显示时间码；`none` 只影响 Markdown，JSON 仍保留完整时间。
+
+## 可选说话人分离
+
+说话人分离默认关闭。启用后在本机用 pyannote community-1 生成匿名标签 `A`/`B`/`C`…，换人即换段，文稿形如 `[00:01:12] A  正文`。不识别真实姓名，也不调用云端商业模型。
+
+```bash
+uv run recapit transcribe "records/录音.m4a" --speakers
+uv run recapit transcribe "records/录音.m4a" --speakers --max-speakers 4
+```
+
+人数上限默认 4。Whisper chunk 检查点在只改说话人参数时可复用；分离结果写入 `speakers.json`。未安装 `--extra speakers` 或缺少模型授权时命令失败，不会静默输出无标签文稿。
 
 ## 恢复、重启与覆盖
 
@@ -108,6 +127,10 @@ beam_size = 5
 vad_filter = true
 hotwords = []
 
+[transcription.speakers]
+enabled = false
+max_speakers = 4
+
 [output]
 directory = "outputs"
 timestamps = "paragraph"
@@ -124,5 +147,5 @@ uv run mypy
 uv run pytest
 openspec validate recording-transcription-summary-workflow --strict
 openspec validate optional-word-output --strict
-openspec validate checkpointed-chunk-transcription --strict
+openspec validate optional-speaker-diarization --strict
 ```

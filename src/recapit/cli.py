@@ -46,6 +46,16 @@ def transcribe_command(
         bool,
         typer.Option("--live-text/--no-live-text", help="在进度中显示最新识别文字。"),
     ] = False,
+    speakers: Annotated[
+        bool | None,
+        typer.Option("--speakers/--no-speakers", help="是否启用本机说话人分离。"),
+    ] = None,
+    max_speakers: Annotated[
+        int | None, typer.Option("--max-speakers", help="说话人人数上限，默认 4。")
+    ] = None,
+    num_speakers: Annotated[
+        int | None, typer.Option("--num-speakers", help="已知的确切说话人人数。")
+    ] = None,
 ) -> None:
     """只在本地转写录音，并生成 transcript.json/txt 和总结模板。"""
     renderer: ProgressRenderer | None = None
@@ -56,6 +66,9 @@ def transcribe_command(
                 "output_dir": output_dir,
                 "whisper_model": whisper_model,
                 "language": language,
+                "speakers": speakers,
+                "max_speakers": max_speakers,
+                "num_speakers": num_speakers,
             },
         )
         history = PerformanceHistory()

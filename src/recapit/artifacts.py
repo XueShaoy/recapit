@@ -26,6 +26,7 @@ class ArtifactPaths:
     run_manifest: Path
     chunks_directory: Path
     run_lock: Path
+    speakers_json: Path
 
     @property
     def transcription_targets(self) -> tuple[Path, ...]:
@@ -59,6 +60,7 @@ def _paths_in_directory(output_dir: Path, stem: str) -> ArtifactPaths:
         run_manifest=output_dir / "run.json",
         chunks_directory=output_dir / "chunks",
         run_lock=output_dir / ".run.lock",
+        speakers_json=output_dir / "speakers.json",
     )
 
 

@@ -32,6 +32,7 @@ class Paragraph:
     end: float
     text: str
     segments: tuple[Segment, ...]
+    speaker: str | None = None
 
 
 def format_timestamp(seconds: float) -> str:
@@ -113,9 +114,18 @@ def merge_paragraphs(
         punctuation_break = bool(
             current and text.endswith(_SENTENCE_ENDINGS) and len(text) >= max_chars // 2
         )
-        if current and (gap > pause_seconds or len(combined) > max_chars or punctuation_break):
+        speaker_break = bool(current and current[-1].speaker != segment.speaker)
+        if current and (
+            gap > pause_seconds or len(combined) > max_chars or punctuation_break or speaker_break
+        ):
             paragraphs.append(
-                Paragraph(current[0].start, current[-1].end, _finish_paragraph(text), tuple(current))
+                Paragraph(
+                    current[0].start,
+                    current[-1].end,
+                    _finish_paragraph(text),
+                    tuple(current),
+                    current[0].speaker,
+                )
             )
             current = [segment]
             text = piece
@@ -124,9 +134,24 @@ def merge_paragraphs(
         text = combined
     if current:
         paragraphs.append(
-            Paragraph(current[0].start, current[-1].end, _finish_paragraph(text), tuple(current))
+            Paragraph(
+                current[0].start,
+                current[-1].end,
+                _finish_paragraph(text),
+                tuple(current),
+                current[0].speaker,
+            )
         )
     return paragraphs
+
+
+def _transcript_line(
+    start: float, text: str, *, timestamps: TimestampMode, speaker: str | None
+) -> str:
+    speaker_prefix = f"{speaker}  " if speaker else ""
+    if timestamps == "none":
+        return f"{speaker_prefix}{text}" if speaker_prefix else text
+    return f"{format_timestamp(start)} {speaker_prefix}{text}"
 
 
 def render_transcript(
@@ -138,18 +163,27 @@ def render_transcript(
 ) -> str:
     if timestamps == "segment":
         return "\n\n".join(
-            f"{format_timestamp(segment.start)} {_finish_paragraph(normalize_transcript_text(segment.text))}"
+            _transcript_line(
+                segment.start,
+                _finish_paragraph(normalize_transcript_text(segment.text)),
+                timestamps=timestamps,
+                speaker=segment.speaker,
+            )
             for segment in transcription.segments
         )
     paragraphs = merge_paragraphs(
         transcription.segments, pause_seconds=pause_seconds, max_chars=max_chars
     )
-    if timestamps == "paragraph":
+    if timestamps in {"paragraph", "none"}:
         return "\n\n".join(
-            f"{format_timestamp(paragraph.start)} {paragraph.text}" for paragraph in paragraphs
+            _transcript_line(
+                paragraph.start,
+                paragraph.text,
+                timestamps=timestamps,
+                speaker=paragraph.speaker,
+            )
+            for paragraph in paragraphs
         )
-    if timestamps == "none":
-        return "\n\n".join(paragraph.text for paragraph in paragraphs)
     raise ValueError(f"不支持的时间码模式: {timestamps}")
 
 

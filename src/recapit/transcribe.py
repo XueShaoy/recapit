@@ -8,7 +8,7 @@ from typing import Any, Protocol
 
 from recapit.errors import TranscriptionError
 from recapit.eta import RuntimeEta
-from recapit.models import Segment, Transcription
+from recapit.models import Segment, Transcription, WordTiming
 from recapit.progress import ProgressCallback, ProgressEvent, ProgressTracker, TranscriptionStage
 
 Clock = Callable[[], float]
@@ -43,6 +43,7 @@ class FasterWhisperTranscriber:
         beam_size: int = 5,
         vad_filter: bool = True,
         hotwords: tuple[str, ...] = (),
+        word_timestamps: bool = False,
         model_factory: Any | None = None,
         clock: Clock | None = None,
     ) -> None:
@@ -53,6 +54,7 @@ class FasterWhisperTranscriber:
         self.beam_size = beam_size
         self.vad_filter = vad_filter
         self.hotwords = hotwords
+        self.word_timestamps = word_timestamps
         self._model_factory = model_factory
         self._clock = clock
         self.last_load_seconds: float | None = None
@@ -94,7 +96,7 @@ class FasterWhisperTranscriber:
         duration_seconds: float,
         progress: ProgressCallback | None = None,
     ) -> Transcription:
-        segments, detected_language = self.transcribe_chunk(
+        segments, detected_language, _words = self.transcribe_chunk(
             path, duration_seconds=duration_seconds, progress=progress
         )
         if not segments:
@@ -114,7 +116,7 @@ class FasterWhisperTranscriber:
         *,
         duration_seconds: float,
         progress: ProgressCallback | None = None,
-    ) -> tuple[list[Segment], str]:
+    ) -> tuple[list[Segment], str, list[WordTiming]]:
         emit = progress or (lambda _event: None)
         tracker = ProgressTracker(duration_seconds, clock=self._clock or time.monotonic)
         emit(tracker.snapshot(TranscriptionStage.model_loading))
@@ -132,8 +134,11 @@ class FasterWhisperTranscriber:
                 beam_size=self.beam_size,
                 hotwords=",".join(self.hotwords) if self.hotwords else None,
                 initial_prompt=whisper_initial_prompt(self.language),
+                word_timestamps=self.word_timestamps,
             )
-            segments = self._consume_segments(raw_segments, tracker, eta, emit, inference_started)
+            segments, words = self._consume_segments(
+                raw_segments, tracker, eta, emit, inference_started
+            )
         except TranscriptionError:
             raise
         except Exception as exc:
@@ -142,7 +147,7 @@ class FasterWhisperTranscriber:
         self.total_inference_seconds += self.last_inference_seconds
         emit(tracker.complete())
         detected_language = str(getattr(info, "language", None) or self.language or "unknown")
-        return segments, detected_language
+        return segments, detected_language, words
 
     def _consume_segments(
         self,
@@ -151,13 +156,15 @@ class FasterWhisperTranscriber:
         eta: RuntimeEta,
         emit: ProgressCallback,
         inference_started: float,
-    ) -> list[Segment]:
+    ) -> tuple[list[Segment], list[WordTiming]]:
         segments: list[Segment] = []
+        words: list[WordTiming] = []
         for item in raw_segments:
             segment = _normalize_segment(item)
             if segment is None:
                 continue
             segments.append(segment)
+            words.extend(_normalize_words(item))
             event = tracker.observe_segment(segment.end, segment.text)
             remaining = eta.update(
                 inference_elapsed=max(self._now() - inference_started, 0.0),
@@ -178,7 +185,8 @@ class FasterWhisperTranscriber:
                 )
             )
         segments.sort(key=lambda item: item.start)
-        return segments
+        words.sort(key=lambda item: (item.start, item.end))
+        return segments, words
 
 
 def _normalize_segment(item: Any) -> Segment | None:
@@ -189,6 +197,20 @@ def _normalize_segment(item: Any) -> Segment | None:
         return Segment(start=float(item.start), end=float(item.end), text=text)
     except (TypeError, ValueError) as exc:
         raise TranscriptionError(f"Whisper 返回了无效分段: {exc}") from exc
+
+
+def _normalize_words(item: Any) -> list[WordTiming]:
+    raw_words = getattr(item, "words", None) or []
+    words: list[WordTiming] = []
+    for word in raw_words:
+        text = str(getattr(word, "word", getattr(word, "text", ""))).strip()
+        if not text:
+            continue
+        try:
+            words.append(WordTiming(start=float(word.start), end=float(word.end), text=text))
+        except (TypeError, ValueError) as exc:
+            raise TranscriptionError(f"Whisper 返回了无效词级时间: {exc}") from exc
+    return words
 
 
 def huggingface_hub_dir() -> Path:

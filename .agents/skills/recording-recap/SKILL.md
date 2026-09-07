@@ -1,6 +1,6 @@
 ---
 name: recording-recap
-description: 使用本地 Whisper 转写指定录音，并通过一个 Agent 子任务生成结构化总结和整洁的 Markdown 文稿。适用于录音转文字、会议纪要、录音总结，以及从 Recapit 检查点重新总结或排版；不适用于实时转写或说话人识别。
+description: 使用本地 Whisper 转写指定录音，并通过一个 Agent 子任务生成结构化总结和整洁的 Markdown 文稿。适用于录音转文字、会议纪要、录音总结，可选的本机说话人分离（匿名 A/B），以及从 Recapit 检查点重新总结或排版；不适用于实时转写或真实姓名识别。
 ---
 
 # 录音转写与总结
@@ -21,6 +21,7 @@ description: 使用本地 Whisper 转写指定录音，并通过一个 Agent 子
 - 只有用户明确要求“输出 Word”“生成 Word 文档”或“生成 docx”时才使用 `--word`；默认不传入该选项。
 - 只有用户明确要求忽略检查点并从头转写时才对 `transcribe` 使用 `--restart`；不得把替换派生产物的授权解释为允许重新推理。
 - 只有用户明确允许替换最终派生产物时才对 `render` 使用 `--overwrite`；该选项不得用于 `transcribe`。
+- 只有用户明确要求区分说话人、标注人物 A/B 或「谁在说话」时才对 `transcribe` 使用 `--speakers`；默认不传入。说话人是匿名字母，不得要求或声称识别真实姓名。
 - 只有用户明确要求在转写进度中看到识别文字时才使用 `--live-text`。
 
 成功后返回 Markdown、`recap.json`、不可变的 `transcript.json`，以及用户请求 Word 时生成的 DOCX 路径。Word 导出失败时说明该阶段失败，返回已保留的 Markdown、`recap.json`、转写检查点和总结文件路径；修复后直接重试 `render --word --overwrite`，不得重新运行 Whisper 或另行启动总结子 Agent。

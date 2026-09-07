@@ -14,6 +14,10 @@ beam_size = 5
 vad_filter = true
 hotwords = []
 
+[transcription.speakers]
+enabled = false
+max_speakers = 4
+
 [output]
 directory = "outputs"
 timestamps = "paragraph"

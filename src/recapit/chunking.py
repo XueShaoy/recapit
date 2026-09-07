@@ -10,7 +10,7 @@ from pathlib import Path
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from recapit.errors import MediaValidationError, TranscriptionError
-from recapit.models import Segment
+from recapit.models import Segment, WordTiming
 from recapit.progress import ProgressEvent
 
 
@@ -102,7 +102,16 @@ def absolute_segments(spec: ChunkSpec, segments: list[Segment]) -> list[Segment]
     for segment in segments:
         start = min(max(spec.extract_start + segment.start, 0.0), spec.extract_end)
         end = min(max(spec.extract_start + segment.end, start), spec.extract_end)
-        result.append(Segment(start=start, end=end, text=segment.text))
+        result.append(Segment(start=start, end=end, text=segment.text, speaker=segment.speaker))
+    return result
+
+
+def absolute_words(spec: ChunkSpec, words: list[WordTiming]) -> list[WordTiming]:
+    result: list[WordTiming] = []
+    for word in words:
+        start = min(max(spec.extract_start + word.start, 0.0), spec.extract_end)
+        end = min(max(spec.extract_start + word.end, start), spec.extract_end)
+        result.append(WordTiming(start=start, end=end, text=word.text))
     return result
 
 
@@ -129,6 +138,22 @@ def merge_chunk_segments(
             raise TranscriptionError("chunk 边界存在无法安全消解的显著重叠")
         result.append(segment)
     return result
+
+
+def merge_chunk_words(
+    chunks: list[tuple[ChunkSpec, list[WordTiming]]], *, overlap_tolerance: float = 1.0
+) -> list[WordTiming]:
+    merged = merge_chunk_segments(
+        [
+            (
+                spec,
+                [Segment(start=word.start, end=word.end, text=word.text) for word in words],
+            )
+            for spec, words in chunks
+        ],
+        overlap_tolerance=overlap_tolerance,
+    )
+    return [WordTiming(start=item.start, end=item.end, text=item.text) for item in merged]
 
 
 def aggregate_chunk_progress(

@@ -14,12 +14,14 @@ def test_summary_document_requires_hash_and_rejects_extra_fields() -> None:
 
 
 def test_recording_skill_describes_resume_and_immutable_outputs() -> None:
-    skill = (Path(__file__).parents[1] / "skills" / "recording-recap" / "SKILL.md").read_text(
-        encoding="utf-8"
-    )
+    skill = (
+        Path(__file__).parents[1] / ".agents" / "skills" / "recording-recap" / "SKILL.md"
+    ).read_text(encoding="utf-8")
     assert "15 分钟核心区间" in skill
     assert "--restart" in skill
     assert "不可变的 `transcript.json`" in skill
     assert "`recap.json`" in skill
     assert "只启动一个子 Agent" in skill
     assert "不得将音频或转写文字发送给外部 API" in skill
+    assert "--speakers" in skill
+    assert "真实姓名" in skill

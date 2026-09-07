@@ -12,6 +12,11 @@ dependencies = [
     "typer>=0.16.0",
 ]
 
+[project.optional-dependencies]
+speakers = [
+    "pyannote.audio>=4.0.0",
+]
+
 [project.scripts]
 recapit = "recapit.cli:main"
 

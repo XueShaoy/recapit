@@ -28,6 +28,9 @@ class AppConfig:
     paragraph_pause_seconds: float = 2.0
     paragraph_max_chars: int = 240
     overwrite: bool = False
+    speakers: bool = False
+    max_speakers: int = 4
+    num_speakers: int | None = None
 
     def validate(self) -> AppConfig:
         if self.engine != "faster-whisper":
@@ -47,6 +50,10 @@ class AppConfig:
             raise ConfigurationError("paragraph_pause_seconds 不能小于 0")
         if self.paragraph_max_chars <= 0:
             raise ConfigurationError("字符数限制必须大于 0")
+        if self.max_speakers < 2:
+            raise ConfigurationError("max_speakers 必须大于等于 2")
+        if self.num_speakers is not None and self.num_speakers < 2:
+            raise ConfigurationError("num_speakers 必须大于等于 2")
         return self
 
 
@@ -59,8 +66,9 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         raise ConfigurationError("recapit.toml 的配置分区必须是 TOML 表")
     chunking = transcription.get("chunking", {})
     decode = transcription.get("decode", {})
-    if not all(isinstance(section, dict) for section in (chunking, decode)):
-        raise ConfigurationError("transcription.chunking/decode 必须是 TOML 表")
+    speakers = transcription.get("speakers", {})
+    if not all(isinstance(section, dict) for section in (chunking, decode, speakers)):
+        raise ConfigurationError("transcription.chunking/decode/speakers 必须是 TOML 表")
     return {
         "engine": transcription.get("engine"),
         "whisper_model": transcription.get("model"),
@@ -78,6 +86,9 @@ def _flatten_config(data: dict[str, Any]) -> dict[str, Any]:
         "timestamps": output.get("timestamps"),
         "paragraph_pause_seconds": output.get("paragraph_pause_seconds"),
         "paragraph_max_chars": output.get("paragraph_max_chars"),
+        "speakers": speakers.get("enabled"),
+        "max_speakers": speakers.get("max_speakers"),
+        "num_speakers": speakers.get("num_speakers"),
     }
 
 

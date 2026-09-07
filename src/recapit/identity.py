@@ -70,3 +70,22 @@ def run_signature(config: AppConfig, *, actual_device: str | None = None) -> str
         separators=(",", ":"),
     )
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+SPEAKER_PIPELINE_ID = "pyannote/speaker-diarization-community-1"
+SPEAKER_ALIGNMENT_VERSION = "exclusive-word-v1"
+
+
+def speaker_signature(config: AppConfig) -> str:
+    payload = json.dumps(
+        {
+            "pipeline": SPEAKER_PIPELINE_ID,
+            "max_speakers": config.max_speakers,
+            "num_speakers": config.num_speakers,
+            "alignment": SPEAKER_ALIGNMENT_VERSION,
+        },
+        ensure_ascii=False,
+        sort_keys=True,
+        separators=(",", ":"),
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()

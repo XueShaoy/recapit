@@ -48,7 +48,7 @@ def test_source_identity_and_run_signature(tmp_path: Path) -> None:
     assert recording_id(first, first_hash).endswith(first_hash[:12])
     config = AppConfig()
     assert run_signature(config, actual_device="cpu") == run_signature(
-        AppConfig(timestamps="none"), actual_device="cpu"
+        AppConfig(timestamps="none", speakers=True, max_speakers=5), actual_device="cpu"
     )
     assert run_signature(config, actual_device="cpu") != run_signature(
         AppConfig(beam_size=1), actual_device="cpu"

@@ -20,17 +20,25 @@ from recapit.artifacts import (
 from recapit.chunking import (
     ChunkSpec,
     absolute_segments,
+    absolute_words,
     aggregate_chunk_progress,
     build_chunk_plan,
     extracted_chunk,
     merge_chunk_segments,
+    merge_chunk_words,
 )
 from recapit.config import AppConfig
 from recapit.errors import ArtifactError, TranscriptionError, WordExportError
 from recapit.formatter import render_markdown
-from recapit.identity import resolve_device, run_signature, sanitize_stem, sha256_file
+from recapit.identity import (
+    resolve_device,
+    run_signature,
+    sanitize_stem,
+    sha256_file,
+    speaker_signature,
+)
 from recapit.media import validate_recording, validate_recording_path
-from recapit.models import Segment, Transcription
+from recapit.models import Segment, Transcription, WordTiming
 from recapit.performance import PerformanceHistory
 from recapit.progress import ProgressCallback, ProgressEvent, ProgressTracker, TranscriptionStage
 from recapit.run_state import (
@@ -40,11 +48,21 @@ from recapit.run_state import (
     ChunkStatus,
     RunLock,
     RunManifest,
+    SpeakerStage,
     WorkflowStage,
     load_chunk_checkpoint,
     load_manifest,
+    load_speaker_checkpoint,
     write_chunk_checkpoint,
     write_manifest,
+    write_speaker_checkpoint,
+)
+from recapit.speakers import (
+    PyannoteDiarizer,
+    apply_speaker_labels,
+    build_speaker_checkpoint,
+    extracted_diarization_wav,
+    require_speakers_extra,
 )
 from recapit.transcribe import FasterWhisperTranscriber, Transcriber
 from recapit.word import markdown_to_docx
@@ -75,6 +93,8 @@ def transcribe_recording(
     performance_history: PerformanceHistory | None = None,
     restart: bool = False,
     chunk_extractor: ChunkExtractor | None = None,
+    speaker_diarizer: PyannoteDiarizer | None = None,
+    speaker_wav_extractor: Callable[[Path, Path], AbstractContextManager[Path]] | None = None,
 ) -> TranscriptionResult:
     config.validate()
     validate_recording_path(recording)
@@ -90,22 +110,23 @@ def transcribe_recording(
     )
     actual_device = resolve_device(config.device)
     signature = run_signature(config, actual_device=actual_device)
+    speakers_sig = speaker_signature(config) if config.speakers else None
+    if config.speakers and speaker_diarizer is None:
+        require_speakers_extra()
     manifest = _open_or_create_manifest(
         paths,
         recording,
         duration=duration,
         source_digest=source_digest,
         signature=signature,
+        speakers_sig=speakers_sig,
+        speakers_enabled=config.speakers,
         plan=plan,
         restart=restart,
     )
     tracker = ProgressTracker(duration)
     progress(tracker.snapshot(TranscriptionStage.validating))
-    if manifest.stage in {
-        WorkflowStage.transcribed,
-        WorkflowStage.summary_ready,
-        WorkflowStage.rendered,
-    }:
+    if _whisper_complete(manifest) and _speakers_satisfied(paths, manifest, config, speakers_sig):
         _verify_artifact(paths, manifest, "transcript", paths.transcript_json)
         stored_manifest = load_manifest(paths.run_manifest)
         if stored_manifest.source_path != manifest.source_path:
@@ -115,21 +136,33 @@ def transcribe_recording(
         progress(_terminal_event(TranscriptionStage.completed, tracker, transcription))
         return TranscriptionResult(paths, transcription)
 
-    active_transcriber = transcriber or FasterWhisperTranscriber(
-        model=config.whisper_model,
-        language=config.language,
-        device=actual_device,
-        compute_type=config.compute_type,
-        beam_size=config.beam_size,
-        vad_filter=config.vad_filter,
-        hotwords=config.hotwords,
-    )
+    need_whisper = not _whisper_complete(manifest)
+    active_transcriber = transcriber
+    if need_whisper:
+        active_transcriber = transcriber or FasterWhisperTranscriber(
+            model=config.whisper_model,
+            language=config.language,
+            device=actual_device,
+            compute_type=config.compute_type,
+            beam_size=config.beam_size,
+            vad_filter=config.vad_filter,
+            hotwords=config.hotwords,
+            word_timestamps=config.speakers,
+        )
     extractor = chunk_extractor or extracted_chunk
     passthrough = transcriber is not None and chunk_extractor is None
     with RunLock(paths.run_lock):
         if restart or not paths.run_manifest.exists():
             write_manifest(paths.run_manifest, manifest)
-        manifest = manifest.with_stage(WorkflowStage.transcribing)
+        if manifest.stage is WorkflowStage.planned:
+            manifest = manifest.with_stage(WorkflowStage.transcribing)
+        if config.speakers:
+            manifest = manifest.model_copy(
+                update={
+                    "speaker_stage": SpeakerStage.pending,
+                    "speaker_signature": speakers_sig,
+                }
+            )
         write_manifest(paths.run_manifest, manifest)
         checkpoints: dict[int, ChunkCheckpoint] = {}
         completed_core = 0.0
@@ -149,49 +182,51 @@ def transcribe_recording(
                     percent=min(completed_core / duration * 100.0, 99.0),
                 )
             )
-        for index, record in enumerate(manifest.chunks):
-            if record.status is ChunkStatus.completed:
-                continue
-            context: AbstractContextManager[Path]
-            context = (
-                nullcontext(recording)
-                if passthrough
-                else extractor(recording, record.spec, paths.directory)
-            )
-            with context as chunk_path:
-                local_segments, language = _transcribe_chunk(
-                    active_transcriber,
-                    chunk_path,
-                    duration_seconds=record.spec.extract_duration,
-                    progress=partial(
-                        _emit_chunk_progress,
-                        progress=progress,
-                        spec=record.spec,
-                        completed_core_seconds=completed_core,
-                        total_seconds=duration,
-                    ),
+        if active_transcriber is not None:
+            for index, record in enumerate(manifest.chunks):
+                if record.status is ChunkStatus.completed:
+                    continue
+                context: AbstractContextManager[Path]
+                context = (
+                    nullcontext(recording)
+                    if passthrough
+                    else extractor(recording, record.spec, paths.directory)
                 )
-            checkpoint = ChunkCheckpoint(
-                spec=record.spec,
-                run_signature=signature,
-                language=language,
-                segments=absolute_segments(record.spec, local_segments),
-            )
-            checkpoint_path = paths.chunks_directory / f"{record.spec.index:04d}.json"
-            digest = write_chunk_checkpoint(checkpoint_path, checkpoint)
-            updated_record = record.model_copy(
-                update={
-                    "status": ChunkStatus.completed,
-                    "path": str(checkpoint_path.relative_to(paths.directory)),
-                    "sha256": digest,
-                }
-            )
-            records = list(manifest.chunks)
-            records[index] = updated_record
-            manifest = manifest.model_copy(update={"chunks": records})
-            write_manifest(paths.run_manifest, manifest)
-            checkpoints[record.spec.index] = checkpoint
-            completed_core += record.spec.core_duration
+                with context as chunk_path:
+                    local_segments, language, local_words = _transcribe_chunk(
+                        active_transcriber,
+                        chunk_path,
+                        duration_seconds=record.spec.extract_duration,
+                        progress=partial(
+                            _emit_chunk_progress,
+                            progress=progress,
+                            spec=record.spec,
+                            completed_core_seconds=completed_core,
+                            total_seconds=duration,
+                        ),
+                    )
+                checkpoint = ChunkCheckpoint(
+                    spec=record.spec,
+                    run_signature=signature,
+                    language=language,
+                    segments=absolute_segments(record.spec, local_segments),
+                    words=absolute_words(record.spec, local_words) if config.speakers else [],
+                )
+                checkpoint_path = paths.chunks_directory / f"{record.spec.index:04d}.json"
+                digest = write_chunk_checkpoint(checkpoint_path, checkpoint)
+                updated_record = record.model_copy(
+                    update={
+                        "status": ChunkStatus.completed,
+                        "path": str(checkpoint_path.relative_to(paths.directory)),
+                        "sha256": digest,
+                    }
+                )
+                records = list(manifest.chunks)
+                records[index] = updated_record
+                manifest = manifest.model_copy(update={"chunks": records})
+                write_manifest(paths.run_manifest, manifest)
+                checkpoints[record.spec.index] = checkpoint
+                completed_core += record.spec.core_duration
 
         merged = merge_chunk_segments([(spec, checkpoints[spec.index].segments) for spec in plan])
         if not merged:
@@ -204,6 +239,20 @@ def transcribe_recording(
             ),
             config.language or "unknown",
         )
+        words = merge_chunk_words([(spec, checkpoints[spec.index].words) for spec in plan])
+        if config.speakers:
+            merged = _apply_diarization(
+                recording,
+                config,
+                paths,
+                manifest,
+                segments=merged,
+                words=words,
+                speakers_sig=speakers_sig,
+                diarizer=speaker_diarizer,
+                wav_extractor=speaker_wav_extractor,
+            )
+            manifest = load_manifest(paths.run_manifest)
         transcription = Transcription.for_source(
             recording,
             duration_seconds=duration,
@@ -222,19 +271,28 @@ def transcribe_recording(
             ("summary_template", paths.summary_template),
         ):
             artifacts[name] = _artifact_record(paths, path)
-        manifest = manifest.model_copy(update={"artifacts": artifacts}).with_stage(
-            WorkflowStage.transcribed
+        speaker_stage = SpeakerStage.complete if config.speakers else SpeakerStage.skipped
+        manifest = _at_least_stage(
+            manifest.model_copy(
+                update={
+                    "artifacts": artifacts,
+                    "speaker_stage": speaker_stage,
+                    "speaker_signature": speakers_sig,
+                }
+            ),
+            WorkflowStage.transcribed,
         )
         write_manifest(paths.run_manifest, manifest)
     progress(_terminal_event(TranscriptionStage.completed, tracker, transcription))
-    _record_success(
-        active_transcriber,
-        config,
-        audio_seconds=duration,
-        history=performance_history,
-        signature=signature,
-        actual_device=actual_device,
-    )
+    if active_transcriber is not None:
+        _record_success(
+            active_transcriber,
+            config,
+            audio_seconds=duration,
+            history=performance_history,
+            signature=signature,
+            actual_device=actual_device,
+        )
     return TranscriptionResult(paths, transcription)
 
 
@@ -273,6 +331,7 @@ def _paths_in_existing(directory: Path, stem: str) -> ArtifactPaths:
         run_manifest=directory / "run.json",
         chunks_directory=directory / "chunks",
         run_lock=directory / ".run.lock",
+        speakers_json=directory / "speakers.json",
     )
 
 
@@ -283,6 +342,8 @@ def _open_or_create_manifest(
     duration: float,
     source_digest: str,
     signature: str,
+    speakers_sig: str | None,
+    speakers_enabled: bool,
     plan: list[ChunkSpec],
     restart: bool,
 ) -> RunManifest:
@@ -292,13 +353,20 @@ def _open_or_create_manifest(
             raise ArtifactError("现有运行与源录音摘要不匹配；请使用其他输出目录")
         if manifest.run_signature != signature or [item.spec for item in manifest.chunks] != plan:
             raise ArtifactError("现有 chunk 与当前转写配置不兼容；请恢复原配置或使用 --restart")
-        return manifest.model_copy(update={"source_path": str(recording.resolve())})
+        updates: dict[str, object] = {"source_path": str(recording.resolve())}
+        if speakers_enabled:
+            updates["speaker_signature"] = speakers_sig
+            if manifest.speaker_signature != speakers_sig:
+                updates["speaker_stage"] = SpeakerStage.pending
+        return manifest.model_copy(update=updates)
     manifest = RunManifest(
         source_sha256=source_digest,
         source_size_bytes=recording.stat().st_size,
         source_duration_seconds=duration,
         source_path=str(recording.resolve()),
         run_signature=signature,
+        speaker_signature=speakers_sig,
+        speaker_stage=SpeakerStage.pending if speakers_enabled else SpeakerStage.skipped,
         chunks=[ChunkRecord(spec=spec) for spec in plan],
     )
     return manifest
@@ -314,21 +382,121 @@ def _load_committed_chunk(
     return checkpoint
 
 
+def _at_least_stage(manifest: RunManifest, stage: WorkflowStage) -> RunManifest:
+    order = list(WorkflowStage)
+    if order.index(manifest.stage) >= order.index(stage):
+        return manifest
+    return manifest.with_stage(stage)
+
+
+def _whisper_complete(manifest: RunManifest) -> bool:
+    return bool(manifest.chunks) and all(
+        record.status is ChunkStatus.completed for record in manifest.chunks
+    )
+
+
+def _speakers_satisfied(
+    paths: ArtifactPaths,
+    manifest: RunManifest,
+    config: AppConfig,
+    speakers_sig: str | None,
+) -> bool:
+    if not _whisper_complete(manifest) or not paths.transcript_json.exists():
+        return False
+    if not config.speakers:
+        return manifest.stage in {
+            WorkflowStage.transcribed,
+            WorkflowStage.summary_ready,
+            WorkflowStage.rendered,
+        }
+    if manifest.speaker_stage is not SpeakerStage.complete:
+        return False
+    if manifest.speaker_signature != speakers_sig or "speakers" not in manifest.artifacts:
+        return False
+    _verify_artifact(paths, manifest, "speakers", paths.speakers_json)
+    if "transcript" not in manifest.artifacts:
+        return False
+    try:
+        _verify_artifact(paths, manifest, "transcript", paths.transcript_json)
+    except ArtifactError:
+        return False
+    transcription = load_transcript_json(paths.transcript_json)
+    return all(segment.speaker for segment in transcription.segments)
+
+
+def _apply_diarization(
+    recording: Path,
+    config: AppConfig,
+    paths: ArtifactPaths,
+    manifest: RunManifest,
+    *,
+    segments: list[Segment],
+    words: list[WordTiming],
+    speakers_sig: str | None,
+    diarizer: PyannoteDiarizer | None,
+    wav_extractor: Callable[[Path, Path], AbstractContextManager[Path]] | None,
+) -> list[Segment]:
+    assert speakers_sig is not None
+    if (
+        paths.speakers_json.exists()
+        and manifest.speaker_stage is SpeakerStage.complete
+        and manifest.speaker_signature == speakers_sig
+        and "speakers" in manifest.artifacts
+    ):
+        try:
+            _verify_artifact(paths, manifest, "speakers", paths.speakers_json)
+            checkpoint = load_speaker_checkpoint(paths.speakers_json)
+            if checkpoint.speaker_signature == speakers_sig:
+                labeled, _labels = apply_speaker_labels(
+                    segments=segments,
+                    words=words,
+                    turns=list(checkpoint.turns),
+                    label_map=dict(checkpoint.label_map),
+                )
+                return labeled
+        except ArtifactError:
+            pass
+    engine = diarizer or PyannoteDiarizer()
+    extractor = wav_extractor or extracted_diarization_wav
+    with extractor(recording, paths.directory) as wav_path:
+        turns = engine.diarize(wav_path, config=config)
+    labeled, label_map = apply_speaker_labels(segments=segments, words=words, turns=turns)
+    checkpoint = build_speaker_checkpoint(
+        config, signature=speakers_sig, turns=turns, label_map=label_map
+    )
+    write_speaker_checkpoint(paths.speakers_json, checkpoint)
+    artifacts = dict(manifest.artifacts)
+    artifacts["speakers"] = _artifact_record(paths, paths.speakers_json)
+    write_manifest(
+        paths.run_manifest,
+        manifest.model_copy(
+            update={
+                "artifacts": artifacts,
+                "speaker_signature": speakers_sig,
+                "speaker_stage": SpeakerStage.complete,
+            }
+        ),
+    )
+    return labeled
+
+
 def _transcribe_chunk(
     transcriber: Transcriber,
     path: Path,
     *,
     duration_seconds: float,
     progress: ProgressCallback,
-) -> tuple[list[Segment], str]:
+) -> tuple[list[Segment], str, list[WordTiming]]:
     chunk_method = getattr(transcriber, "transcribe_chunk", None)
     if callable(chunk_method):
-        value: tuple[list[Segment], str] = chunk_method(
-            path, duration_seconds=duration_seconds, progress=progress
-        )
-        return value
+        value = chunk_method(path, duration_seconds=duration_seconds, progress=progress)
+        if len(value) == 3:
+            segments, language, words = value
+            return list(segments), str(language), list(words)
+        segments, language = value
+        return list(segments), str(language), []
     result = transcriber.transcribe(path, duration_seconds=duration_seconds, progress=progress)
-    return result.segments, result.language
+    return result.segments, result.language, []
 
 
 def _emit_chunk_progress(

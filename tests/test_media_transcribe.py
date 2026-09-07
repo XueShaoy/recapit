@@ -7,7 +7,7 @@ import pytest
 from recapit.errors import MediaValidationError, TranscriptionError
 from recapit.media import validate_recording
 from recapit.progress import TranscriptionStage
-from recapit.transcribe import FasterWhisperTranscriber, ZH_INITIAL_PROMPT
+from recapit.transcribe import ZH_INITIAL_PROMPT, FasterWhisperTranscriber
 
 
 def test_validate_recording_missing_file(tmp_path: Path) -> None:

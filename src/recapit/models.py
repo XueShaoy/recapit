@@ -11,12 +11,31 @@ SCHEMA_VERSION = "1.0"
 TimestampMode = Literal["none", "paragraph", "segment"]
 
 
+class WordTiming(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    start: float = Field(ge=0)
+    end: float = Field(ge=0)
+    text: str = Field(min_length=1)
+
+    @model_validator(mode="after")
+    def validate_interval(self) -> WordTiming:
+        if self.end < self.start:
+            raise ValueError("word end must be greater than or equal to start")
+        cleaned = self.text.strip()
+        if not cleaned:
+            raise ValueError("word text must not be blank")
+        object.__setattr__(self, "text", cleaned)
+        return self
+
+
 class Segment(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     start: float = Field(ge=0)
     end: float = Field(ge=0)
     text: str = Field(min_length=1)
+    speaker: str | None = None
 
     @model_validator(mode="after")
     def validate_interval(self) -> Segment:
