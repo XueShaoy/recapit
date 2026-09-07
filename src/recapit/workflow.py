@@ -20,6 +20,8 @@ from recapit.errors import ArtifactError
 from recapit.formatter import render_markdown
 from recapit.media import validate_recording, validate_recording_path
 from recapit.models import Transcription
+from recapit.performance import PerformanceHistory
+from recapit.progress import ProgressCallback, ProgressEvent, ProgressTracker, TranscriptionStage
 from recapit.transcribe import FasterWhisperTranscriber, Transcriber
 
 
@@ -41,26 +43,76 @@ def transcribe_recording(
     config: AppConfig,
     *,
     transcriber: Transcriber | None = None,
-    progress: Callable[[str], None] = lambda _message: None,
+    progress: ProgressCallback = lambda _event: None,
+    performance_history: PerformanceHistory | None = None,
 ) -> TranscriptionResult:
     config.validate()
     validate_recording_path(recording)
     paths = output_paths(recording, config.output_dir)
     ensure_targets_available(paths.transcription_targets, overwrite=config.overwrite)
-    progress("校验录音")
+    tracker = ProgressTracker(0.0)
+    progress(tracker.snapshot(TranscriptionStage.validating))
     duration = validate_recording(recording)
-    progress("Whisper 本地转写")
+    tracker = ProgressTracker(duration)
+    progress(tracker.snapshot(TranscriptionStage.validating))
     active_transcriber = transcriber or FasterWhisperTranscriber(
         model=config.whisper_model,
         language=config.language,
         device=config.device,
         compute_type=config.compute_type,
     )
-    transcription = active_transcriber.transcribe(recording, duration_seconds=duration)
-    progress("保存转写检查点")
+    transcription = active_transcriber.transcribe(
+        recording, duration_seconds=duration, progress=progress
+    )
+    progress(_terminal_event(TranscriptionStage.writing_checkpoint, tracker, transcription))
     write_transcript_json(paths.transcript_json, transcription, replace_existing=config.overwrite)
     write_summary_inputs(paths, transcription, replace_existing=config.overwrite)
+    progress(_terminal_event(TranscriptionStage.completed, tracker, transcription))
+    _record_success(
+        active_transcriber,
+        config,
+        audio_seconds=duration,
+        history=performance_history,
+    )
     return TranscriptionResult(paths, transcription)
+
+
+def _terminal_event(
+    stage: TranscriptionStage,
+    tracker: ProgressTracker,
+    transcription: Transcription,
+) -> ProgressEvent:
+    return ProgressEvent(
+        stage=stage,
+        duration_seconds=tracker.duration_seconds,
+        processed_seconds=tracker.duration_seconds,
+        segment_count=len(transcription.segments),
+        elapsed_seconds=tracker.elapsed_seconds(),
+        percent=100.0,
+        eta_seconds=0.0,
+        latest_text=transcription.segments[-1].text,
+        heartbeat=False,
+    )
+
+
+def _record_success(
+    transcriber: Transcriber,
+    config: AppConfig,
+    *,
+    audio_seconds: float,
+    history: PerformanceHistory | None,
+) -> None:
+    inference = getattr(transcriber, "last_inference_seconds", None)
+    if not isinstance(inference, (int, float)) or inference <= 0:
+        return
+    store = history if history is not None else PerformanceHistory()
+    store.record_success(
+        model=config.whisper_model,
+        device=config.device,
+        compute_type=config.compute_type,
+        audio_seconds=audio_seconds,
+        inference_seconds=float(inference),
+    )
 
 
 def prepare_summary_inputs(
@@ -86,9 +138,7 @@ def render_recording(
     transcription = load_transcript_json(transcript_json)
     summary = load_summary_json(summary_json)
     if summary.transcript_sha256 != transcription.transcript_sha256:
-        raise ArtifactError(
-            "Agent 总结与转写不匹配：transcript_sha256 不一致，未修改任何最终产物"
-        )
+        raise ArtifactError("Agent 总结与转写不匹配：transcript_sha256 不一致，未修改任何最终产物")
     paths = checkpoint_paths(transcript_json)
     if paths.markdown.exists() and not config.overwrite:
         raise ArtifactError(f"目标产物已存在: {paths.markdown}；请使用 --overwrite")
@@ -103,4 +153,3 @@ def render_recording(
     write_transcript_json(paths.transcript_json, completed, replace_existing=True)
     atomic_write_text(paths.markdown, markdown, replace_existing=config.overwrite)
     return RenderResult(paths.markdown.resolve(), paths.transcript_json.resolve(), completed)
-

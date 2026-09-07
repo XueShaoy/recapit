@@ -20,6 +20,8 @@ uv sync --locked
 uv run recapit transcribe "records/20260907-shanghai/湖滨路营业部 大会.m4a"
 ```
 
+转写开始前会显示录音时长、模型、设备和计算精度，以及预计耗时区间。区间来自本机同配置的历史实时率中位数（标明“基于本机历史”），没有历史时则使用保守范围（标明“首次估算，开始后动态校准”）。若无法确认模型已缓存在本机，还会提示首次下载时间不计入上述估算。转写过程中会持续显示活动状态、百分比、音频位置、分段数、已耗时和动态 ETA；交互终端原位刷新，被日志或 Agent 捕获时按最长 30 秒或每 5 个百分点输出一行。默认只输出进度元数据，不把识别正文写入终端；需要预览时显式加上 `--live-text`。
+
 这会生成 `transcript.json`、`transcript.txt` 和 `summary.template.json`。Skill 随后只启动一个子 Agent，让它根据 `transcript.txt` 填写同目录的 `summary.json`。最后确定性渲染：
 
 ```bash

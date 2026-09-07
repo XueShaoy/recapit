@@ -1,3 +1,4 @@
+from collections.abc import Iterator
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -5,6 +6,7 @@ import pytest
 
 from recapit.errors import MediaValidationError, TranscriptionError
 from recapit.media import validate_recording
+from recapit.progress import TranscriptionStage
 from recapit.transcribe import FasterWhisperTranscriber
 
 
@@ -84,3 +86,41 @@ def test_faster_whisper_rejects_empty_speech(tmp_path: Path) -> None:
     transcriber = FasterWhisperTranscriber(model="tiny", language=None, model_factory=EmptyModel)
     with pytest.raises(TranscriptionError, match="未检测"):
         transcriber.transcribe(recording, duration_seconds=1.0)
+
+
+def test_faster_whisper_emits_progress_before_generator_finishes(tmp_path: Path) -> None:
+    events: list[object] = []
+    finished = {"value": False}
+
+    class StreamingModel:
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            pass
+
+        def transcribe(
+            self, _path: str, **_kwargs: object
+        ) -> tuple[Iterator[SimpleNamespace], object]:
+            def generate() -> Iterator[SimpleNamespace]:
+                yield SimpleNamespace(start=0.0, end=4.0, text="第一句")
+                assert any(
+                    getattr(event, "stage", None) is TranscriptionStage.transcribing
+                    and getattr(event, "segment_count", 0) >= 1
+                    for event in events
+                )
+                yield SimpleNamespace(start=4.0, end=8.0, text="第二句")
+                finished["value"] = True
+
+            return generate(), SimpleNamespace(language="zh")
+
+    recording = tmp_path / "audio.m4a"
+    recording.write_bytes(b"fake")
+    transcriber = FasterWhisperTranscriber(
+        model="small", language="zh", model_factory=StreamingModel
+    )
+    result = transcriber.transcribe(recording, duration_seconds=10.0, progress=events.append)
+    assert finished["value"] is True
+    assert [item.text for item in result.segments] == ["第一句", "第二句"]
+    stages = [event.stage for event in events]
+    assert TranscriptionStage.model_loading in stages
+    assert stages[-1] is TranscriptionStage.transcribing
+    assert events[-1].percent == 100.0
+    assert events[-1].processed_seconds == 10.0

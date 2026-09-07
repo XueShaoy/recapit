@@ -8,6 +8,10 @@ import typer
 
 from recapit.config import load_config
 from recapit.errors import RecapitError
+from recapit.eta import estimate_transcription
+from recapit.performance import PerformanceHistory
+from recapit.progress_display import ProgressRenderer
+from recapit.transcribe import whisper_model_cached
 from recapit.workflow import prepare_summary_inputs, render_recording, transcribe_recording
 
 app = typer.Typer(
@@ -39,8 +43,13 @@ def transcribe_command(
     language: Annotated[
         str | None, typer.Option("--language", help="语言提示，例如 zh；auto 为自动检测。")
     ] = None,
+    live_text: Annotated[
+        bool,
+        typer.Option("--live-text/--no-live-text", help="在进度中显示最新识别文字。"),
+    ] = False,
 ) -> None:
     """只在本地转写录音，并生成 transcript.json/txt 和总结模板。"""
+    renderer: ProgressRenderer | None = None
     try:
         config = load_config(
             config_file,
@@ -51,12 +60,41 @@ def transcribe_command(
                 "language": language,
             },
         )
+        history = PerformanceHistory()
+        renderer = ProgressRenderer(
+            model=config.whisper_model,
+            device=config.device,
+            compute_type=config.compute_type,
+            estimate_for=lambda duration: estimate_transcription(
+                duration_seconds=duration,
+                model=config.whisper_model,
+                device=config.device,
+                history_rtfs=history.matching_rtfs(
+                    model=config.whisper_model,
+                    device=config.device,
+                    compute_type=config.compute_type,
+                ),
+            ),
+            model_cached=whisper_model_cached(config.whisper_model),
+            live_text=live_text,
+        )
         result = transcribe_recording(
-            recording, config, progress=lambda message: typer.echo(f"→ {message}")
+            recording,
+            config,
+            progress=renderer.handle,
+            performance_history=history,
         )
     except RecapitError as exc:
+        if renderer is not None:
+            renderer.close()
         typer.echo(f"错误：{exc}", err=True)
         raise typer.Exit(code=1) from exc
+    except KeyboardInterrupt as exc:
+        if renderer is not None:
+            renderer.close()
+        typer.echo("错误：转写已中断", err=True)
+        raise typer.Exit(code=130) from exc
+    renderer.close()
     typer.echo("✓ 本地转写完成")
     typer.echo(f"JSON: {result.paths.transcript_json.resolve()}")
     typer.echo(f"文本: {result.paths.transcript_text.resolve()}")
