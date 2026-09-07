@@ -13,6 +13,14 @@ from recapit.progress import ProgressCallback, ProgressEvent, ProgressTracker, T
 
 Clock = Callable[[], float]
 
+ZH_INITIAL_PROMPT = "以下是带标点符号的中文转写。大家好，今天开会。"
+
+
+def whisper_initial_prompt(language: str | None) -> str | None:
+    if language and language.startswith("zh"):
+        return ZH_INITIAL_PROMPT
+    return None
+
 
 class Transcriber(Protocol):
     def transcribe(
@@ -32,6 +40,9 @@ class FasterWhisperTranscriber:
         language: str | None,
         device: str = "auto",
         compute_type: str = "default",
+        beam_size: int = 5,
+        vad_filter: bool = True,
+        hotwords: tuple[str, ...] = (),
         model_factory: Any | None = None,
         clock: Clock | None = None,
     ) -> None:
@@ -39,10 +50,16 @@ class FasterWhisperTranscriber:
         self.language = language
         self.device = device
         self.compute_type = compute_type
+        self.beam_size = beam_size
+        self.vad_filter = vad_filter
+        self.hotwords = hotwords
         self._model_factory = model_factory
         self._clock = clock
         self.last_load_seconds: float | None = None
         self.last_inference_seconds: float | None = None
+        self.total_inference_seconds = 0.0
+        self.actual_device = device
+        self._model: Any | None = None
 
     def _now(self) -> float:
         if self._clock is not None:
@@ -50,6 +67,8 @@ class FasterWhisperTranscriber:
         return time.monotonic()
 
     def _create_model(self) -> Any:
+        if self._model is not None:
+            return self._model
         if self._model_factory is None:
             try:
                 from faster_whisper import WhisperModel  # type: ignore[import-untyped]
@@ -57,11 +76,14 @@ class FasterWhisperTranscriber:
                 raise TranscriptionError("faster-whisper 未安装，请先运行 uv sync") from exc
             self._model_factory = WhisperModel
         try:
-            return self._model_factory(
+            self._model = self._model_factory(
                 self.model_name,
                 device=self.device,
                 compute_type=self.compute_type,
             )
+            backend = getattr(self._model, "model", None)
+            self.actual_device = str(getattr(backend, "device", self.device))
+            return self._model
         except Exception as exc:
             raise TranscriptionError(f"无法加载 Whisper 模型 {self.model_name}: {exc}") from exc
 
@@ -72,6 +94,27 @@ class FasterWhisperTranscriber:
         duration_seconds: float,
         progress: ProgressCallback | None = None,
     ) -> Transcription:
+        segments, detected_language = self.transcribe_chunk(
+            path, duration_seconds=duration_seconds, progress=progress
+        )
+        if not segments:
+            raise TranscriptionError("未检测到可转写语音")
+        return Transcription.for_source(
+            path,
+            duration_seconds=duration_seconds,
+            language=detected_language,
+            engine="faster-whisper",
+            model=self.model_name,
+            segments=segments,
+        )
+
+    def transcribe_chunk(
+        self,
+        path: Path,
+        *,
+        duration_seconds: float,
+        progress: ProgressCallback | None = None,
+    ) -> tuple[list[Segment], str]:
         emit = progress or (lambda _event: None)
         tracker = ProgressTracker(duration_seconds, clock=self._clock or time.monotonic)
         emit(tracker.snapshot(TranscriptionStage.model_loading))
@@ -83,7 +126,12 @@ class FasterWhisperTranscriber:
         inference_started = self._now()
         try:
             raw_segments, info = whisper_model.transcribe(
-                str(path), language=self.language, vad_filter=True
+                str(path),
+                language=self.language,
+                vad_filter=self.vad_filter,
+                beam_size=self.beam_size,
+                hotwords=",".join(self.hotwords) if self.hotwords else None,
+                initial_prompt=whisper_initial_prompt(self.language),
             )
             segments = self._consume_segments(raw_segments, tracker, eta, emit, inference_started)
         except TranscriptionError:
@@ -91,18 +139,10 @@ class FasterWhisperTranscriber:
         except Exception as exc:
             raise TranscriptionError(f"Whisper 转写失败: {exc}") from exc
         self.last_inference_seconds = max(self._now() - inference_started, 0.0)
-        if not segments:
-            raise TranscriptionError("未检测到可转写语音")
+        self.total_inference_seconds += self.last_inference_seconds
         emit(tracker.complete())
         detected_language = str(getattr(info, "language", None) or self.language or "unknown")
-        return Transcription.for_source(
-            path,
-            duration_seconds=duration_seconds,
-            language=detected_language,
-            engine="faster-whisper",
-            model=self.model_name,
-            segments=segments,
-        )
+        return segments, detected_language
 
     def _consume_segments(
         self,

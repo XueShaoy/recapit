@@ -12,6 +12,7 @@ def test_performance_sample_serialization_excludes_content(tmp_path: Path) -> No
         compute_type="int8",
         audio_seconds=120.0,
         inference_seconds=60.0,
+        run_signature="signature-a",
     )
     raw = store.path.read_text(encoding="utf-8")
     payload = json.loads(raw)
@@ -19,12 +20,13 @@ def test_performance_sample_serialization_excludes_content(tmp_path: Path) -> No
     blob = json.dumps(payload)
     for forbidden in ("path", "filename", "hash", "sha256", "transcript", ".m4a", "你好"):
         assert forbidden not in blob
-    key = run_config_key("test-hw", "turbo", "cpu", "int8")
+    key = run_config_key("test-hw", "turbo", "cpu", "int8", "signature-a")
     sample = payload["samples"][key][0]
     assert sample["hardware"] == "test-hw"
     assert sample["model"] == "turbo"
     assert sample["device"] == "cpu"
     assert sample["compute_type"] == "int8"
+    assert sample["run_signature"] == "signature-a"
     assert sample["audio_seconds"] == 120.0
     assert sample["inference_seconds"] == 60.0
     assert sample["rtf"] == 0.5
@@ -43,6 +45,25 @@ def test_history_limits_recent_samples_and_median_source(tmp_path: Path) -> None
     rtfs = store.matching_rtfs(model="turbo", device="auto", compute_type="int8")
     assert len(rtfs) == MAX_SAMPLES_PER_KEY
     assert rtfs[0] == (1.0 + 3) / 10.0
+
+
+def test_history_separates_run_signatures(tmp_path: Path) -> None:
+    store = PerformanceHistory(tmp_path / "history.json", hardware="hw")
+    store.record_success(
+        model="turbo",
+        device="cpu",
+        compute_type="int8",
+        audio_seconds=100,
+        inference_seconds=20,
+        run_signature="a",
+    )
+    assert store.matching_rtfs(
+        model="turbo", device="cpu", compute_type="int8", run_signature="a"
+    ) == [0.2]
+    assert (
+        store.matching_rtfs(model="turbo", device="cpu", compute_type="int8", run_signature="b")
+        == []
+    )
 
 
 def test_history_degrades_when_file_is_unusable(tmp_path: Path, monkeypatch) -> None:

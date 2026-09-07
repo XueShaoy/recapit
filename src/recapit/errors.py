@@ -20,3 +20,12 @@ class SummaryError(RecapitError):
 
 class ArtifactError(RecapitError):
     """An output artifact cannot be safely written or loaded."""
+
+
+class WordExportError(ArtifactError):
+    """Word export failed after the base artifacts were safely written."""
+
+    def __init__(self, message: str, *, markdown_path: str, json_path: str) -> None:
+        super().__init__(message)
+        self.markdown_path = markdown_path
+        self.json_path = json_path

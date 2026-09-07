@@ -5,6 +5,15 @@ language = "zh"
 device = "auto"
 compute_type = "int8"
 
+[transcription.chunking]
+seconds = 900
+overlap_seconds = 10
+
+[transcription.decode]
+beam_size = 5
+vad_filter = true
+hotwords = []
+
 [output]
 directory = "outputs"
 timestamps = "paragraph"

@@ -1,4 +1,0 @@
-interface:
-  display_name: "录音转写与总结"
-  short_description: "将本地录音转写为整洁文稿，并生成结构化 AI 总结"
-  default_prompt: "使用 $recording-recap 转写并总结这段本地录音，默认按段落显示时间码。"

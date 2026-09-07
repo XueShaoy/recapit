@@ -7,7 +7,7 @@ import pytest
 from recapit.errors import MediaValidationError, TranscriptionError
 from recapit.media import validate_recording
 from recapit.progress import TranscriptionStage
-from recapit.transcribe import FasterWhisperTranscriber
+from recapit.transcribe import FasterWhisperTranscriber, ZH_INITIAL_PROMPT
 
 
 def test_validate_recording_missing_file(tmp_path: Path) -> None:
@@ -50,10 +50,13 @@ def test_validate_recording_reports_decode_error(
 
 
 class FakeWhisperModel:
+    last_kwargs: dict[str, object] = {}
+
     def __init__(self, *_args: object, **_kwargs: object) -> None:
         pass
 
-    def transcribe(self, _path: str, **_kwargs: object) -> tuple[list[SimpleNamespace], object]:
+    def transcribe(self, _path: str, **kwargs: object) -> tuple[list[SimpleNamespace], object]:
+        type(self).last_kwargs = kwargs
         return (
             [
                 SimpleNamespace(start=2.0, end=3.0, text=" 后一句 "),
@@ -74,6 +77,22 @@ def test_faster_whisper_normalizes_and_sorts(tmp_path: Path) -> None:
     assert [item.text for item in result.segments] == ["第一句", "后一句"]
     assert result.model == "small"
     assert result.language == "zh"
+    assert FakeWhisperModel.last_kwargs["initial_prompt"] == ZH_INITIAL_PROMPT
+
+
+def test_faster_whisper_reuses_model_across_chunks(tmp_path: Path) -> None:
+    recording = tmp_path / "audio.m4a"
+    recording.write_bytes(b"fake")
+    calls = {"count": 0}
+
+    def factory(*args: object, **kwargs: object) -> FakeWhisperModel:
+        calls["count"] += 1
+        return FakeWhisperModel(*args, **kwargs)
+
+    transcriber = FasterWhisperTranscriber(model="small", language="zh", model_factory=factory)
+    transcriber.transcribe_chunk(recording, duration_seconds=4)
+    transcriber.transcribe_chunk(recording, duration_seconds=4)
+    assert calls["count"] == 1
 
 
 def test_faster_whisper_rejects_empty_speech(tmp_path: Path) -> None:

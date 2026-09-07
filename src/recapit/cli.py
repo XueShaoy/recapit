@@ -7,8 +7,9 @@ from typing import Annotated
 import typer
 
 from recapit.config import load_config
-from recapit.errors import RecapitError
+from recapit.errors import RecapitError, WordExportError
 from recapit.eta import estimate_transcription
+from recapit.identity import resolve_device, run_signature
 from recapit.performance import PerformanceHistory
 from recapit.progress_display import ProgressRenderer
 from recapit.transcribe import whisper_model_cached
@@ -34,9 +35,7 @@ def transcribe_command(
         "recapit.toml"
     ),
     output_dir: Annotated[Path | None, typer.Option("--output-dir", help="产物根目录。")] = None,
-    overwrite: Annotated[
-        bool | None, typer.Option("--overwrite/--no-overwrite", help="是否覆盖已有产物。")
-    ] = None,
+    restart: Annotated[bool, typer.Option("--restart", help="忽略已有 chunk 并从头转写。")] = False,
     whisper_model: Annotated[
         str | None, typer.Option("--whisper-model", help="Whisper 模型规格。")
     ] = None,
@@ -55,12 +54,13 @@ def transcribe_command(
             config_file,
             overrides={
                 "output_dir": output_dir,
-                "overwrite": overwrite,
                 "whisper_model": whisper_model,
                 "language": language,
             },
         )
         history = PerformanceHistory()
+        actual_device = resolve_device(config.device)
+        signature = run_signature(config, actual_device=actual_device)
         renderer = ProgressRenderer(
             model=config.whisper_model,
             device=config.device,
@@ -71,8 +71,9 @@ def transcribe_command(
                 device=config.device,
                 history_rtfs=history.matching_rtfs(
                     model=config.whisper_model,
-                    device=config.device,
+                    device=actual_device,
                     compute_type=config.compute_type,
+                    run_signature=signature,
                 ),
             ),
             model_cached=whisper_model_cached(config.whisper_model),
@@ -83,6 +84,7 @@ def transcribe_command(
             config,
             progress=renderer.handle,
             performance_history=history,
+            restart=restart,
         )
     except RecapitError as exc:
         if renderer is not None:
@@ -97,6 +99,7 @@ def transcribe_command(
     renderer.close()
     typer.echo("✓ 本地转写完成")
     typer.echo(f"JSON: {result.paths.transcript_json.resolve()}")
+    typer.echo(f"运行状态: {result.paths.run_manifest.resolve()}")
     typer.echo(f"文本: {result.paths.transcript_text.resolve()}")
     typer.echo(f"模板: {result.paths.summary_template.resolve()}")
 
@@ -129,8 +132,11 @@ def render_command(
         TimestampOption | None, typer.Option("--timestamps", help="Markdown 时间码粒度。")
     ] = None,
     overwrite: Annotated[
-        bool | None, typer.Option("--overwrite/--no-overwrite", help="是否覆盖已有 Markdown。")
+        bool | None, typer.Option("--overwrite/--no-overwrite", help="是否覆盖已有最终产物。")
     ] = None,
+    word: Annotated[
+        bool, typer.Option("--word/--no-word", help="是否额外生成同名 Word 文档。")
+    ] = False,
 ) -> None:
     """校验 Agent 总结并确定性生成最终 Markdown 与 JSON。"""
     try:
@@ -145,13 +151,22 @@ def render_command(
             transcript,
             summary,
             config,
+            word=word,
             progress=lambda message: typer.echo(f"→ {message}"),
         )
+    except WordExportError as exc:
+        typer.echo(f"错误：Word 导出失败：{exc}", err=True)
+        typer.echo("已保留基础产物：", err=True)
+        typer.echo(f"Markdown: {exc.markdown_path}", err=True)
+        typer.echo(f"JSON: {exc.json_path}", err=True)
+        raise typer.Exit(code=1) from exc
     except RecapitError as exc:
         typer.echo(f"错误：{exc}", err=True)
         raise typer.Exit(code=1) from exc
     typer.echo("✓ Markdown 渲染完成")
     typer.echo(f"Markdown: {result.markdown_path}")
+    if result.word_path is not None:
+        typer.echo(f"Word: {result.word_path}")
     typer.echo(f"JSON: {result.json_path}")
 
 

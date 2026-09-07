@@ -9,6 +9,7 @@ from pathlib import Path
 from pydantic import ValidationError
 
 from recapit.errors import ArtifactError
+from recapit.identity import sanitize_stem
 from recapit.models import SCHEMA_VERSION, SummaryDocument, Transcription
 
 
@@ -16,10 +17,15 @@ from recapit.models import SCHEMA_VERSION, SummaryDocument, Transcription
 class ArtifactPaths:
     directory: Path
     markdown: Path
+    word: Path
+    recap_json: Path
     transcript_json: Path
     transcript_text: Path
     summary_template: Path
     summary_json: Path
+    run_manifest: Path
+    chunks_directory: Path
+    run_lock: Path
 
     @property
     def transcription_targets(self) -> tuple[Path, ...]:
@@ -32,25 +38,33 @@ class ArtifactPaths:
         )
 
 
-def output_paths(source: Path, output_root: Path) -> ArtifactPaths:
-    stem = source.stem.strip() or "recording"
-    return _paths_in_directory(output_root / stem, stem)
+def output_paths(
+    source: Path, output_root: Path, *, source_sha256: str | None = None
+) -> ArtifactPaths:
+    stem = sanitize_stem(source)
+    directory_name = f"{stem}-{source_sha256[:12]}" if source_sha256 else stem
+    return _paths_in_directory(output_root / directory_name, stem)
 
 
 def _paths_in_directory(output_dir: Path, stem: str) -> ArtifactPaths:
     return ArtifactPaths(
         directory=output_dir,
         markdown=output_dir / f"{stem}.md",
+        word=output_dir / f"{stem}.docx",
+        recap_json=output_dir / "recap.json",
         transcript_json=output_dir / "transcript.json",
         transcript_text=output_dir / "transcript.txt",
         summary_template=output_dir / "summary.template.json",
         summary_json=output_dir / "summary.json",
+        run_manifest=output_dir / "run.json",
+        chunks_directory=output_dir / "chunks",
+        run_lock=output_dir / ".run.lock",
     )
 
 
 def checkpoint_paths(transcript_json: Path) -> ArtifactPaths:
     transcription = load_transcript_json(transcript_json)
-    stem = Path(transcription.source.path).stem.strip() or "recording"
+    stem = sanitize_stem(Path(transcription.source.path))
     return _paths_in_directory(transcript_json.parent, stem)
 
 

@@ -6,7 +6,9 @@ readme = "README.md"
 requires-python = ">=3.11,<3.14"
 dependencies = [
     "faster-whisper>=1.2.0",
+    "markdown-it-py>=4.0.0",
     "pydantic>=2.11.0",
+    "python-docx>=1.2.0",
     "typer>=0.16.0",
 ]
 

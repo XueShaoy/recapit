@@ -19,6 +19,7 @@ class PerformanceSample:
     model: str
     device: str
     compute_type: str
+    run_signature: str
     audio_seconds: float
     inference_seconds: float
     rtf: float
@@ -30,6 +31,7 @@ class PerformanceSample:
             "model": self.model,
             "device": self.device,
             "compute_type": self.compute_type,
+            "run_signature": self.run_signature,
             "audio_seconds": self.audio_seconds,
             "inference_seconds": self.inference_seconds,
             "rtf": self.rtf,
@@ -42,8 +44,15 @@ def hardware_fingerprint() -> str:
     return f"{uname.system}-{uname.machine}-{uname.processor or uname.machine}"
 
 
-def run_config_key(hardware: str, model: str, device: str, compute_type: str) -> str:
-    return f"{hardware}|{model}|{device}|{compute_type}"
+def run_config_key(
+    hardware: str,
+    model: str,
+    device: str,
+    compute_type: str,
+    run_signature: str = "",
+) -> str:
+    suffix = f"|{run_signature}" if run_signature else ""
+    return f"{hardware}|{model}|{device}|{compute_type}{suffix}"
 
 
 def default_history_path() -> Path:
@@ -75,8 +84,15 @@ class PerformanceHistory:
         self.path = path or default_history_path()
         self.hardware = hardware or hardware_fingerprint()
 
-    def matching_rtfs(self, *, model: str, device: str, compute_type: str) -> list[float]:
-        key = run_config_key(self.hardware, model, device, compute_type)
+    def matching_rtfs(
+        self,
+        *,
+        model: str,
+        device: str,
+        compute_type: str,
+        run_signature: str = "",
+    ) -> list[float]:
+        key = run_config_key(self.hardware, model, device, compute_type, run_signature)
         return [sample.rtf for sample in self._samples_by_key().get(key, []) if sample.rtf > 0]
 
     def record_success(
@@ -87,6 +103,7 @@ class PerformanceHistory:
         compute_type: str,
         audio_seconds: float,
         inference_seconds: float,
+        run_signature: str = "",
     ) -> None:
         if audio_seconds <= 0 or inference_seconds <= 0:
             return
@@ -95,6 +112,7 @@ class PerformanceHistory:
             model=model,
             device=device,
             compute_type=compute_type,
+            run_signature=run_signature,
             audio_seconds=audio_seconds,
             inference_seconds=inference_seconds,
             rtf=inference_seconds / audio_seconds,
@@ -102,7 +120,13 @@ class PerformanceHistory:
         )
         payload = self._load_payload()
         grouped = self._samples_from_payload(payload)
-        key = run_config_key(sample.hardware, sample.model, sample.device, sample.compute_type)
+        key = run_config_key(
+            sample.hardware,
+            sample.model,
+            sample.device,
+            sample.compute_type,
+            sample.run_signature,
+        )
         existing = grouped.get(key, [])
         existing.append(sample)
         grouped[key] = existing[-MAX_SAMPLES_PER_KEY:]
@@ -161,6 +185,7 @@ def _parse_sample(item: object) -> PerformanceSample | None:
         model = str(item["model"])
         device = str(item["device"])
         compute_type = str(item["compute_type"])
+        run_signature = str(item.get("run_signature", ""))
         audio_seconds = float(item["audio_seconds"])
         inference_seconds = float(item["inference_seconds"])
         rtf = float(item["rtf"])
@@ -174,6 +199,7 @@ def _parse_sample(item: object) -> PerformanceSample | None:
         model=model,
         device=device,
         compute_type=compute_type,
+        run_signature=run_signature,
         audio_seconds=audio_seconds,
         inference_seconds=inference_seconds,
         rtf=rtf,

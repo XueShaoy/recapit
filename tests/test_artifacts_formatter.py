@@ -54,8 +54,43 @@ def test_format_timestamp_rejects_negative() -> None:
 
 def test_merge_paragraphs_uses_pause_and_preserves_order() -> None:
     paragraphs = merge_paragraphs(transcription().segments, pause_seconds=2.0, max_chars=240)
-    assert [item.text for item in paragraphs] == ["今天讨论目标。先确认范围", "最后安排任务。"]
+    assert [item.text for item in paragraphs] == ["今天讨论目标。先确认范围。", "最后安排任务。"]
     assert paragraphs[0].start == 0.9
+
+
+def test_merge_paragraphs_inserts_cjk_punctuation() -> None:
+    paragraphs = merge_paragraphs(
+        [
+            Segment(start=0.0, end=1.0, text="因为我们现在就是债这一块私募"),
+            Segment(start=1.0, end=2.0, text="因为之前咱们FI这块没有在做业务"),
+            Segment(start=5.1, end=6.0, text="那就先这样吧"),
+        ],
+        pause_seconds=2.0,
+        max_chars=240,
+    )
+    assert paragraphs[0].text == "因为我们现在就是债这一块私募，因为之前咱们FI这块没有在做业务。"
+    assert paragraphs[1].text == "那就先这样吧。"
+
+
+def test_merge_paragraphs_marks_questions_ending_with_ma() -> None:
+    paragraphs = merge_paragraphs(
+        [
+            Segment(start=0.0, end=1.0, text="你听明白了吗"),
+            Segment(start=1.0, end=2.0, text="我再讲一遍"),
+        ],
+        pause_seconds=2.0,
+        max_chars=240,
+    )
+    assert paragraphs[0].text == "你听明白了吗？我再讲一遍。"
+
+
+def test_merge_paragraphs_normalizes_ascii_commas() -> None:
+    paragraphs = merge_paragraphs(
+        [Segment(start=0.0, end=1.0, text="对,然后呢,因为他这个现象就算是不好")],
+        pause_seconds=2.0,
+        max_chars=240,
+    )
+    assert paragraphs[0].text == "对，然后呢，因为他这个现象就算是不好。"
 
 
 def test_render_transcript_modes() -> None:
@@ -101,6 +136,9 @@ def test_markdown_renders_action_details() -> None:
 def test_json_round_trip_and_existing_target_policy(tmp_path: Path) -> None:
     paths = output_paths(Path("会议.m4a"), tmp_path)
     assert paths.markdown.name == "会议.md"
+    assert paths.word.name == "会议.docx"
+    assert paths.recap_json.name == "recap.json"
+    assert paths.run_manifest.name == "run.json"
     original = transcription()
     write_transcript_json(paths.transcript_json, original, replace_existing=False)
     assert load_transcript_json(paths.transcript_json) == original
@@ -129,3 +167,4 @@ def test_summary_inputs_and_hash(tmp_path: Path) -> None:
     )
     assert load_summary_json(summary_path).summary == "摘要"
     assert checkpoint_paths(paths.transcript_json).directory == paths.directory
+    assert checkpoint_paths(paths.transcript_json).word == paths.directory / "会议.docx"

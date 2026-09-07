@@ -1,26 +1,26 @@
 ## 1. 依赖与产物契约
 
-- [ ] 1.1 将 `python-docx` 和 `markdown-it-py` 声明为直接运行时依赖并更新 `uv.lock`，通过 `uv sync --locked` 和依赖树确认无需 Pandoc 或办公软件
-- [ ] 1.2 为最终产物增加稳定的同名 `.docx` 路径，并为渲染结果增加可空 Word 路径，通过路径测试验证中文录音名和默认未请求状态
-- [ ] 1.3 扩展最终目标预检，使启用 Word 时在任何写入前同时检查 Markdown 和 DOCX，且未启用时忽略旧 DOCX；通过覆盖与非覆盖测试验证行为
+- [x] 1.1 将 `python-docx` 和 `markdown-it-py` 声明为直接运行时依赖并更新 `uv.lock`，通过 `uv sync --locked` 和依赖树确认无需 Pandoc 或办公软件
+- [x] 1.2 为最终产物增加稳定的同名 `.docx` 路径，并为渲染结果增加可空 Word 路径，通过路径测试验证中文录音名和默认未请求状态
+- [x] 1.3 扩展最终目标预检，使启用 Word 时在任何写入前同时检查 Markdown 和 DOCX，且未启用时忽略旧 DOCX；通过覆盖与非覆盖测试验证行为
 
 ## 2. Markdown 到 Word 转换
 
-- [ ] 2.1 实现受控 Markdown token 解析，将文档标题、章节标题、元数据、项目符号、正文、行内代码和强调映射到 Word 结构，通过固定样例的段落、样式和文本顺序测试验证
-- [ ] 2.2 为 A4 页面、页边距、中文标题与正文、列表间距配置集中样式，通过 DOCX XML 和文档对象测试验证东亚字体提示与层级
-- [ ] 2.3 原样保留 `[HH:MM:SS]` 时间码、无待办说明和中文标点，通过 paragraph、segment、none 三种现有 Markdown 样例验证内容一致性
-- [ ] 2.4 对可能造成内容丢失的未知块级 Markdown 结构返回可操作错误，通过表格、HTML 或其他未支持 token 测试确认不会静默省略
-- [ ] 2.5 使用同目录临时文件生成并原子替换 DOCX，确保成功后无临时文件，写入或替换失败时不破坏已有 DOCX，并通过故障注入测试验证
+- [x] 2.1 实现受控 Markdown token 解析，将文档标题、章节标题、元数据、项目符号、正文、行内代码和强调映射到 Word 结构，通过固定样例的段落、样式和文本顺序测试验证
+- [x] 2.2 为 A4 页面、页边距、中文标题与正文、列表间距配置集中样式，通过 DOCX XML 和文档对象测试验证东亚字体提示与层级
+- [x] 2.3 原样保留 `[HH:MM:SS]` 时间码、无待办说明和中文标点，通过 paragraph、segment、none 三种现有 Markdown 样例验证内容一致性
+- [x] 2.4 对可能造成内容丢失的未知块级 Markdown 结构返回可操作错误，通过表格、HTML 或其他未支持 token 测试确认不会静默省略
+- [x] 2.5 使用同目录临时文件生成并原子替换 DOCX，确保成功后无临时文件，写入或替换失败时不破坏已有 DOCX，并通过故障注入测试验证
 
 ## 3. 工作流与 CLI
 
-- [ ] 3.1 扩展最终渲染流程，在 `word=True` 时使用与 `.md` 相同的 Markdown 字符串生成 DOCX，在默认状态下完全跳过 Word 转换；通过工作流测试验证产物和调用次数
-- [ ] 3.2 为 `render` 增加默认关闭的 `--word/--no-word` 选项，成功时按请求输出 Word 路径，通过 CLI 帮助、默认调用和显式启用测试验证
-- [ ] 3.3 实现 Word 转换失败的部分成功报告：保留 Markdown、JSON、检查点和总结文件，返回非零状态且不重新执行 Whisper 或 Agent 总结，通过集成测试验证
+- [x] 3.1 扩展最终渲染流程，在 `word=True` 时使用与 `.md` 相同的 Markdown 字符串生成 DOCX，在默认状态下完全跳过 Word 转换；通过工作流测试验证产物和调用次数
+- [x] 3.2 为 `render` 增加默认关闭的 `--word/--no-word` 选项，成功时按请求输出 Word 路径，通过 CLI 帮助、默认调用和显式启用测试验证
+- [x] 3.3 实现 Word 转换失败的部分成功报告：保留 Markdown、JSON、检查点和总结文件，返回非零状态且不重新执行 Whisper 或 Agent 总结，通过集成测试验证
 
 ## 4. Skill、文档与验收
 
-- [ ] 4.1 更新中文 `recording-recap` Skill，仅在用户明确要求 Word/docx 时传入 `--word`，成功后返回三类路径，并运行 Skill 校验器验证元数据和引用
-- [ ] 4.2 更新 README，说明默认不生成 Word、启用命令、产物路径、覆盖和失败恢复，并逐条执行示例命令验证参数有效
-- [ ] 4.3 运行 Ruff、严格 mypy、pytest 和 `openspec validate optional-word-output --strict`，确认现有默认 Markdown/JSON、转写进度、总结和时间码行为无回归
+- [x] 4.1 更新中文 `recording-recap` Skill，仅在用户明确要求 Word/docx 时传入 `--word`，成功后返回三类路径，并运行 Skill 校验器验证元数据和引用
+- [x] 4.2 更新 README，说明默认不生成 Word、启用命令、产物路径、覆盖和失败恢复，并逐条执行示例命令验证参数有效
+- [x] 4.3 运行 Ruff、严格 mypy、pytest 和 `openspec validate optional-word-output --strict`，确认现有默认 Markdown/JSON、转写进度、总结和时间码行为无回归
 - [ ] 4.4 使用真实录音的现有检查点生成 `.md` 与 `.docx`，调用文档工具渲染全部页面进行视觉检查，并验证章节、中文、列表、时间码、长段落、分页及 Word 客户端可打开性
